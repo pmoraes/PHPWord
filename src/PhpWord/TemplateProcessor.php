@@ -60,6 +60,12 @@ class TemplateProcessor
      */
     protected $tempDocumentFooters = array();
 
+    protected $temporaryDocumentRels = array();
+
+    protected $temporaryDocumentTypes = array();
+
+    protected $temporaryDocumentCountRels = array();
+
     /**
      * @since 0.12.0 Throws CreateTemporaryFileException and CopyFileException instead of Exception.
      *
@@ -84,6 +90,10 @@ class TemplateProcessor
         // Temporary document content extraction
         $this->zipClass = new ZipArchive();
         $this->zipClass->open($this->tempDocumentFilename);
+        $this->temporaryDocumentRels = $this->zipClass->getFromName('word/_rels/document.xml.rels');
+        $this->temporaryDocumentTypes = $this->zipClass->getFromName('[Content_Types].xml');
+        $this->temporaryDocumentCountRels = substr_count($this->temporaryDocumentRels, 'Relationship') - 1;
+
         $index = 1;
         while (false !== $this->zipClass->locateName($this->getHeaderName($index))) {
             $this->tempDocumentHeaders[$index] = $this->fixBrokenMacros(
@@ -315,13 +325,20 @@ class TemplateProcessor
      *
      * @throws \PhpOffice\PhpWord\Exception\Exception
      */
-    public function save()
+    public function save($strFilename = '')
     {
         foreach ($this->tempDocumentHeaders as $index => $headerXML) {
             $this->zipClass->addFromString($this->getHeaderName($index), $this->tempDocumentHeaders[$index]);
         }
 
         $this->zipClass->addFromString('word/document.xml', $this->tempDocumentMainPart);
+        if ($this->temporaryDocumentRels) {
+            $this->zipClass->addFromString('word/_rels/document.xml.rels', $this->temporaryDocumentRels);
+        }
+
+        if ($this->temporaryDocumentTypes) {
+            $this->zipClass->addFromString('[Content_Types].xml', $this->temporaryDocumentTypes);
+        }
 
         foreach ($this->tempDocumentFooters as $index => $headerXML) {
             $this->zipClass->addFromString($this->getFooterName($index), $this->tempDocumentFooters[$index]);
@@ -505,5 +522,70 @@ class TemplateProcessor
         }
 
         return substr($this->tempDocumentMainPart, $startPosition, ($endPosition - $startPosition));
+    }
+
+    /**
+     * setImage method this method will replace a variable for a image
+     *
+     * @param string $key this key is the name of the variable to be replaced for the image
+     * @param array $image path of the image and their size
+     *
+     * @return void
+     */
+    public function setImage($key, $image) {
+        $key = '${' . $key . '}';
+        $relationTemplate = '<Relationship Id="RID" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/image" Target="media/IMG"/>';
+        $imageTemplate = '<w:pict><v:shape type="#_x0000_t75" style="width:WIDpx;height:HEIpx"><v:imagedata r:id="RID" o:title=""/></v:shape></w:pict>';
+        $typeTemplate = ' <Override PartName="/word/media/IMG" ContentType="image/EXT"/>';
+        $add = '';
+        $addImage = '';
+        $addType = '';
+        $search = array('RID', 'IMG');
+        $searchType = array('IMG', 'EXT');
+
+        foreach ($image as $img) {
+            $ext = explode('.', $img['img']);
+            $imageExtension = array_pop($ext);
+            if (in_array($imageExtension, array('jpg', 'JPG'))) {
+                $imageExtension = 'jpeg';
+            }
+
+            $imageName = 'img' . $this->temporaryDocumentCountRels . '.' . $imageExtension;
+            $rid = 'rId' . $this->temporaryDocumentCountRels++;
+
+            $this->zipClass->addFile($img['img'], 'word/media/' . $imageName);
+
+            if(isset($img['size'])) {
+                $w = $img['size'][0];
+                $h = $img['size'][1];
+            }
+
+            $addImage .= str_replace(array('RID', 'WID', 'HEI'), array($rid, $w, $h), $imageTemplate);
+
+            $replace = array($imageName, $imageExtension);
+            $addType .= str_replace($searchType, $replace, $typeTemplate);
+
+            $replace = array($rid, $imageName);
+            $add .= str_replace($search, $replace, $relationTemplate);
+        }
+
+        $this->tempDocumentMainPart = str_replace('<w:t>' . $key . '</w:t>', $addImage, $this->tempDocumentMainPart);
+        $this->temporaryDocumentTypes = str_replace('</Types>', $addType, $this->temporaryDocumentTypes) . '</Types>';
+        $this->temporaryDocumentRels = str_replace('</Relationships>', $add, $this->temporaryDocumentRels) . '</Relationships>';
+    }
+    
+    /**
+     * clearString method it'll clear the string
+     *
+     * @param string $string string that will be cleared
+     *
+     * @return void
+     */
+    public function clearString($string) {
+        return str_replace(
+            array('&', '<', '>', "\n"), 
+            array('&amp;', '&lt;', '&gt;', "\n" . '<w:br/>'),
+            $string
+        );
     }
 }
